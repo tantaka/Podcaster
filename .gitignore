@@ -1,4 +1,5 @@
 .env
+.claude/
 output/*/
 !output/.gitkeep
 __pycache__/
