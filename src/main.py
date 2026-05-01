@@ -12,7 +12,6 @@ from src.config import OUTPUT_DIR
 import src.research as research_module
 import src.script_generator as script_gen
 import src.audio_generator as audio_gen
-import src.audio_merger as audio_merger
 import src.drive_client as drive_client
 import src.episode_manager as episode_manager
 
@@ -71,26 +70,20 @@ def main():
     logger.info(f"  対話行数: {len(script['dialogue'])} 行")
 
     # ─────────────────────────────────────────
-    # Step 4: 音声合成 (セグメント生成)
+    # Step 4+5: 音声合成 → MP3
     # ─────────────────────────────────────────
     logger.info("\n[Step 4/6] 音声を合成中...")
-    segments_dir = run_dir / "audio_segments"
-    segment_paths = audio_gen.generate_all_segments(script["dialogue"], segments_dir)
-    logger.info(f"  {len(segment_paths)} セグメント生成完了")
-
-    # ─────────────────────────────────────────
-    # Step 5: 音声結合 → MP3
-    # ─────────────────────────────────────────
-    logger.info("\n[Step 5/6] 音声を結合中...")
     date_str = datetime.utcnow().strftime("%Y%m%d")
     safe_title = re.sub(r'[\\/:*?"<>|　\s]+', "_", script["title"])[:50].strip("_")
     mp3_filename = f"podcast_{date_str}_{safe_title}.mp3"
     mp3_path = run_dir / mp3_filename
-    merged_path = audio_merger.merge_segments(segment_paths, mp3_path)
+    merged_path = audio_gen.generate_podcast_audio(script["dialogue"], mp3_path)
 
     from pydub import AudioSegment
     audio_len = len(AudioSegment.from_mp3(str(merged_path))) / 1000
     logger.info(f"  MP3 生成完了: {merged_path.name} ({audio_len:.1f}秒 / {audio_len/60:.1f}分)")
+
+    logger.info("\n[Step 5/6] (音声結合は Step 4 内で完了)")
 
     # ─────────────────────────────────────────
     # Step 6: Google Drive アップロード
