@@ -1,107 +1,130 @@
 """
-音声生成モジュール: Google Cloud TTS Neural2 (Primary) → WaveNet (Fallback)
+音声生成モジュール: Gemini TTS (無料枠) — google-genai SDK
+  Primary  : gemini-2.5-flash-preview-tts
+  Fallback : gemini-2.5-pro-preview-tts  (異なるバージョン)
 """
-import json
+import base64
 import logging
 from pathlib import Path
 from src.config import (
-    GOOGLE_TTS_CREDENTIALS_JSON,
-    TTS_VOICE_MALE_NEURAL2,
-    TTS_VOICE_FEMALE_NEURAL2,
-    TTS_VOICE_MALE_WAVENET,
-    TTS_VOICE_FEMALE_WAVENET,
-    TTS_LANGUAGE_CODE,
+    GOOGLE_GEMINI_API_KEY,
+    TTS_MODEL_PRIMARY,
+    TTS_MODEL_FALLBACK,
+    TTS_VOICE_MALE_PRIMARY,
+    TTS_VOICE_FEMALE_PRIMARY,
+    TTS_VOICE_MALE_FALLBACK,
+    TTS_VOICE_FEMALE_FALLBACK,
+    TTS_SAMPLE_RATE,
 )
 from src.retry_utils import retry_with_backoff
 
 logger = logging.getLogger(__name__)
 
-# スピーカー別ボイスマッピング
 VOICE_MAP = {
-    "neural2": {
-        "host_male": TTS_VOICE_MALE_NEURAL2,
-        "host_female": TTS_VOICE_FEMALE_NEURAL2,
+    "primary": {
+        "host_male":   TTS_VOICE_MALE_PRIMARY,
+        "host_female": TTS_VOICE_FEMALE_PRIMARY,
     },
-    "wavenet": {
-        "host_male": TTS_VOICE_MALE_WAVENET,
-        "host_female": TTS_VOICE_FEMALE_WAVENET,
+    "fallback": {
+        "host_male":   TTS_VOICE_MALE_FALLBACK,
+        "host_female": TTS_VOICE_FEMALE_FALLBACK,
     },
 }
 
 
-def _get_tts_client():
-    """Google Cloud TTS クライアントを取得 (サービスアカウント認証)"""
-    from google.cloud import texttospeech
-    from google.oauth2 import service_account
+def _pcm_to_mp3(pcm_data: bytes, output_path: Path, mime_type: str = "") -> Path:
+    """PCM バイト列を MP3 ファイルに変換して保存"""
+    from pydub import AudioSegment
 
-    if not GOOGLE_TTS_CREDENTIALS_JSON:
-        raise ValueError("GOOGLE_TTS_CREDENTIALS が設定されていません")
+    sample_rate = TTS_SAMPLE_RATE
+    if "rate=" in mime_type:
+        try:
+            sample_rate = int(mime_type.split("rate=")[1].split(";")[0].strip())
+        except (ValueError, IndexError):
+            pass
 
-    credentials_info = json.loads(GOOGLE_TTS_CREDENTIALS_JSON)
-    credentials = service_account.Credentials.from_service_account_info(
-        credentials_info,
-        scopes=["https://www.googleapis.com/auth/cloud-platform"],
+    audio = AudioSegment(
+        data=pcm_data,
+        sample_width=2,   # 16-bit PCM = 2 bytes/sample
+        frame_rate=sample_rate,
+        channels=1,       # mono
     )
-    return texttospeech.TextToSpeechClient(credentials=credentials)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    audio.export(str(output_path), format="mp3", bitrate="192k")
+    return output_path
 
 
 @retry_with_backoff(exceptions=(Exception,))
-def _synthesize(text: str, speaker: str, voice_type: str) -> bytes:
-    """指定したボイスタイプで音声合成"""
-    from google.cloud import texttospeech
+def _synthesize(text: str, voice_name: str, model: str) -> tuple[bytes, str]:
+    """Gemini TTS で音声合成。(PCMバイト列, mime_type) を返す。"""
+    from google import genai
+    from google.genai import types
 
-    voice_name = VOICE_MAP[voice_type][speaker]
-    logger.info(f"[TTS] {voice_type}/{voice_name}: {text[:30]!r}...")
+    if not GOOGLE_GEMINI_API_KEY:
+        raise ValueError("GOOGLE_GEMINI_API_KEY が設定されていません")
 
-    client = _get_tts_client()
-    synthesis_input = texttospeech.SynthesisInput(text=text)
-    voice = texttospeech.VoiceSelectionParams(
-        language_code=TTS_LANGUAGE_CODE,
-        name=voice_name,
-    )
-    audio_config = texttospeech.AudioConfig(
-        audio_encoding=texttospeech.AudioEncoding.MP3,
-        speaking_rate=0.95,
-        pitch=0.0,
+    logger.info(f"[TTS] {model} / {voice_name}: {text[:30]!r}...")
+    client = genai.Client(api_key=GOOGLE_GEMINI_API_KEY)
+    response = client.models.generate_content(
+        model=model,
+        contents=text,
+        config=types.GenerateContentConfig(
+            response_modalities=["AUDIO"],
+            speech_config=types.SpeechConfig(
+                voice_config=types.VoiceConfig(
+                    prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                        voice_name=voice_name
+                    )
+                )
+            ),
+        ),
     )
 
-    response = client.synthesize_speech(
-        input=synthesis_input,
-        voice=voice,
-        audio_config=audio_config,
-    )
-    return response.audio_content
+    part = response.candidates[0].content.parts[0]
+    raw = part.inline_data.data
+    # SDK バージョンによって bytes / base64文字列 どちらの場合もある
+    if isinstance(raw, str):
+        raw = base64.b64decode(raw)
+    mime_type = part.inline_data.mime_type or ""
+    return raw, mime_type
 
 
 def synthesize_segment(text: str, speaker: str, output_path: Path) -> Path:
     """
-    1つの台詞を音声合成してファイルに保存。
-    Neural2 失敗時は WaveNet にフォールバック。
+    1つの台詞を音声合成して MP3 ファイルに保存。
+    Primary 失敗 → Fallback ボイス → Fallback モデル の順で試みる。
     """
-    # Primary: Neural2
+    # Primary: Flash モデル + Primary ボイス
     try:
-        audio_data = _synthesize(text, speaker, "neural2")
-        output_path.write_bytes(audio_data)
-        logger.info(f"[TTS] Neural2 で生成: {output_path.name}")
+        pcm, mime = _synthesize(text, VOICE_MAP["primary"][speaker], TTS_MODEL_PRIMARY)
+        _pcm_to_mp3(pcm, output_path, mime)
+        logger.info(f"[TTS] Primary で生成: {output_path.name}")
         return output_path
     except Exception as e:
-        logger.warning(f"[TTS] Neural2 失敗: {e} → WaveNet に切り替えます")
+        logger.warning(f"[TTS] Primary 失敗: {e} → Fallback ボイスで再試行")
 
-    # Fallback: WaveNet (異なるバージョンの API)
+    # Fallback1: Flash モデル + Fallback ボイス
     try:
-        audio_data = _synthesize(text, speaker, "wavenet")
-        output_path.write_bytes(audio_data)
-        logger.info(f"[TTS] WaveNet で生成: {output_path.name}")
+        pcm, mime = _synthesize(text, VOICE_MAP["fallback"][speaker], TTS_MODEL_PRIMARY)
+        _pcm_to_mp3(pcm, output_path, mime)
+        logger.info(f"[TTS] Fallback ボイスで生成: {output_path.name}")
         return output_path
     except Exception as e:
-        logger.error(f"[TTS] WaveNet も失敗: {e}")
+        logger.warning(f"[TTS] Fallback ボイスも失敗: {e} → Pro モデルで再試行")
+
+    # Fallback2: Pro モデル (異なるバージョンの API)
+    try:
+        pcm, mime = _synthesize(text, VOICE_MAP["primary"][speaker], TTS_MODEL_FALLBACK)
+        _pcm_to_mp3(pcm, output_path, mime)
+        logger.info(f"[TTS] Pro モデルで生成: {output_path.name}")
+        return output_path
+    except Exception as e:
+        logger.error(f"[TTS] すべての TTS 試行が失敗: {e}")
         raise RuntimeError(f"音声合成に失敗しました: {text[:30]!r}") from e
 
 
 def generate_all_segments(dialogue: list[dict], segments_dir: Path) -> list[Path]:
-    """
-    台本の全台詞を音声合成してセグメントファイルのリストを返す
-    """
+    """台本の全台詞を音声合成してセグメントファイルのリストを返す"""
     logger.info(f"=== 音声生成開始: {len(dialogue)} セグメント ===")
     segments_dir.mkdir(parents=True, exist_ok=True)
     segment_paths = []

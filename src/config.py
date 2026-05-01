@@ -23,14 +23,16 @@ GEMINI_MODEL_PRIMARY = "gemini-2.0-flash"
 GEMINI_MODEL_FALLBACK = "gemini-1.5-flash"
 CLAUDE_MODEL_FALLBACK = "claude-haiku-4-5-20251001"
 
-# Audio Generation
-GOOGLE_TTS_CREDENTIALS_JSON = os.environ.get("GOOGLE_TTS_CREDENTIALS", "")
-TTS_VOICE_MALE_NEURAL2 = "ja-JP-Neural2-C"
-TTS_VOICE_FEMALE_NEURAL2 = "ja-JP-Neural2-B"
-TTS_VOICE_MALE_WAVENET = "ja-JP-Wavenet-C"
-TTS_VOICE_FEMALE_WAVENET = "ja-JP-Wavenet-A"
-TTS_LANGUAGE_CODE = "ja-JP"
-TTS_AUDIO_ENCODING = "MP3"
+# Audio Generation (Gemini TTS — google-genai SDK、無料枠)
+# Primary モデル / Fallback モデル
+TTS_MODEL_PRIMARY = "gemini-2.5-flash-preview-tts"
+TTS_MODEL_FALLBACK = "gemini-2.5-pro-preview-tts"
+# 男性: Charon(低め落ち着いた声) / 女性: Kore(明瞭な声)
+TTS_VOICE_MALE_PRIMARY   = "Charon"
+TTS_VOICE_FEMALE_PRIMARY = "Kore"
+TTS_VOICE_MALE_FALLBACK  = "Fenrir"
+TTS_VOICE_FEMALE_FALLBACK = "Aoede"
+TTS_SAMPLE_RATE = 24000   # Gemini TTS の PCM 出力サンプルレート
 SILENCE_BETWEEN_SPEAKERS_MS = 400  # 話者切り替え時の無音(ms)
 
 # Google Drive

@@ -87,19 +87,7 @@ print(f"\nGOOGLE_DRIVE_REFRESH_TOKEN:\n{creds.refresh_token}")
 print("\n" + "=" * 60)
 
 # ==============================================================
-# 【セル 4】Google Cloud TTS サービスアカウント設定
-# ==============================================================
-# 1. Google Cloud Console → 「IAMと管理」→「サービスアカウント」
-# 2. 「サービスアカウントを作成」
-#    - 名前: podcaster-tts
-#    - ロール: 「Cloud Text-to-Speech ユーザー」
-# 3. 作成後、対象サービスアカウントの「操作」→「鍵を管理」
-#    →「鍵を追加」→「新しい鍵を作成」→「JSON」
-# 4. ダウンロードした JSON ファイルを開いてその中身全体を
-#    GitHub Secret「GOOGLE_TTS_CREDENTIALS」として設定する
-
-# ==============================================================
-# 【セル 5 (参考)】GitHub Secrets に設定が必要な値の一覧
+# 【セル 4 (参考)】GitHub Secrets に設定が必要な値の一覧
 # ==============================================================
 print("""
 GitHub Secrets の設定手順:
@@ -111,8 +99,7 @@ GitHub Secrets の設定手順:
   GOOGLE_DRIVE_CLIENT_ID      ← セル 3 の出力
   GOOGLE_DRIVE_CLIENT_SECRET  ← セル 3 の出力
   GOOGLE_DRIVE_REFRESH_TOKEN  ← セル 3 の出力
-  GOOGLE_TTS_CREDENTIALS      ← サービスアカウント JSON ファイルの中身
-  GOOGLE_GEMINI_API_KEY       ← https://aistudio.google.com/ (無料)
+  GOOGLE_GEMINI_API_KEY       ← https://aistudio.google.com/ (無料・TTS兼用)
   TAVILY_API_KEY              ← https://tavily.com/ (無料: 1000回/月)
 
   ── フォールバック用 (任意・有償) ──────────────────────────
