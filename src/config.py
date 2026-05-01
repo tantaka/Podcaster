@@ -8,9 +8,7 @@ DATA_DIR = BASE_DIR / "data"
 # Research
 TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "")
 BRAVE_SEARCH_API_KEY = os.environ.get("BRAVE_SEARCH_API_KEY", "")
-SEARCH_TOPIC = "Claude Code 最新バージョン 変更点 アップデート"
-SEARCH_QUERY_X = 'Claude Code update changelog site:x.com OR site:twitter.com'
-SEARCH_QUERY_GITHUB = 'Claude Code release notes changelog'
+# 検索クエリは research.py でターゲットバージョンに応じて動的に生成
 GITHUB_API_URL = "https://api.github.com"
 CLAUDE_CODE_REPO = "anthropics/claude-code"
 
