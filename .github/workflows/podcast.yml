@@ -1,0 +1,63 @@
+name: Daily Podcast Generator
+
+on:
+  schedule:
+    # 毎日 JST 9:00 (UTC 0:00) に実行
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+    inputs:
+      debug:
+        description: 'デバッグモード (詳細ログ出力)'
+        required: false
+        default: 'false'
+
+jobs:
+  generate-podcast:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: リポジトリをチェックアウト
+        uses: actions/checkout@v4
+
+      - name: Python 3.11 をセットアップ
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: ffmpeg をインストール (pydub 用)
+        run: sudo apt-get install -y ffmpeg
+
+      - name: 依存ライブラリをインストール
+        run: pip install -r requirements.txt
+
+      - name: 出力ディレクトリを作成
+        run: mkdir -p output data
+
+      - name: Podcast を生成
+        env:
+          TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
+          BRAVE_SEARCH_API_KEY: ${{ secrets.BRAVE_SEARCH_API_KEY }}
+          GOOGLE_GEMINI_API_KEY: ${{ secrets.GOOGLE_GEMINI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GOOGLE_TTS_CREDENTIALS: ${{ secrets.GOOGLE_TTS_CREDENTIALS }}
+          GOOGLE_DRIVE_CLIENT_ID: ${{ secrets.GOOGLE_DRIVE_CLIENT_ID }}
+          GOOGLE_DRIVE_CLIENT_SECRET: ${{ secrets.GOOGLE_DRIVE_CLIENT_SECRET }}
+          GOOGLE_DRIVE_REFRESH_TOKEN: ${{ secrets.GOOGLE_DRIVE_REFRESH_TOKEN }}
+          PYTHONUNBUFFERED: '1'
+          PYTHONPATH: ${{ github.workspace }}
+        run: python -m src.main
+
+      - name: 調査結果をアーティファクトとして保存
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: podcast-artifacts-${{ github.run_number }}
+          path: output/
+          retention-days: 30
+
+      - name: 失敗時の通知
+        if: failure()
+        run: |
+          echo "::error::Podcast 生成に失敗しました。ログを確認してください。"

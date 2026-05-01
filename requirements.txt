@@ -1,0 +1,21 @@
+# Search / Research
+requests>=2.31.0
+
+# Script Generation
+anthropic>=0.40.0
+google-genai>=1.0.0
+
+# Google Cloud TTS
+google-cloud-texttospeech>=2.17.0
+
+# Google Drive / Auth
+google-api-python-client>=2.150.0
+google-auth>=2.36.0
+google-auth-oauthlib>=1.2.0
+google-auth-httplib2>=0.2.0
+
+# Audio Processing
+pydub>=0.25.1
+
+# Utilities
+python-dotenv>=1.0.0
