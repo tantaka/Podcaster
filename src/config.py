@@ -19,8 +19,8 @@ CLAUDE_CODE_REPO = "anthropics/claude-code"
 # Fallback は Claude Haiku (有償、ANTHROPIC_API_KEY が設定されている場合のみ使用)
 GOOGLE_GEMINI_API_KEY = os.environ.get("GOOGLE_GEMINI_API_KEY", "")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
-GEMINI_MODEL_PRIMARY = "gemini-2.0-flash"
-GEMINI_MODEL_FALLBACK = "gemini-1.5-flash"
+GEMINI_MODEL_PRIMARY = "gemini-2.5-flash"
+GEMINI_MODEL_FALLBACK = "gemini-2.5-pro"
 CLAUDE_MODEL_FALLBACK = "claude-haiku-4-5-20251001"
 
 # Audio Generation (Gemini TTS — google-genai SDK、無料枠)

@@ -79,6 +79,11 @@ def _parse_script_json(text: str) -> dict:
     return data
 
 
+class _NoQuotaError(Exception):
+    """無料枠クォータが 0 のエラー — リトライしても解決しないため即 Fallback へ"""
+    pass
+
+
 @retry_with_backoff(exceptions=(Exception,))
 def _generate_with_gemini(user_prompt: str, model: str) -> dict:
     """Google Gemini API で台本生成 (無料枠) — google-genai SDK を使用"""
@@ -88,14 +93,20 @@ def _generate_with_gemini(user_prompt: str, model: str) -> dict:
         raise ValueError("GOOGLE_GEMINI_API_KEY が設定されていません")
     logger.info(f"[Script] Gemini API 使用: {model}")
     client = genai.Client(api_key=GOOGLE_GEMINI_API_KEY)
-    response = client.models.generate_content(
-        model=model,
-        contents=user_prompt,
-        config=types.GenerateContentConfig(
-            system_instruction=SYSTEM_PROMPT,
-            max_output_tokens=4096,
-        ),
-    )
+    try:
+        response = client.models.generate_content(
+            model=model,
+            contents=user_prompt,
+            config=types.GenerateContentConfig(
+                system_instruction=SYSTEM_PROMPT,
+                max_output_tokens=4096,
+            ),
+        )
+    except Exception as e:
+        # limit: 0 はクォータゼロ = 待機しても無意味なのでリトライせず即 Fallback
+        if "limit: 0" in str(e):
+            raise _NoQuotaError(f"{model} は無料枠クォータなし") from e
+        raise
     raw_text = response.text
     logger.info(f"[Script] Gemini レスポンス受信 ({len(raw_text)} 文字)")
     return _parse_script_json(raw_text)
@@ -137,23 +148,27 @@ def generate_script(research_data: dict) -> dict:
             "https://aistudio.google.com/ で無料の API キーを取得してください。"
         )
 
-    # Primary: Gemini 2.0 Flash (無料)
+    # Primary: Gemini 2.5 Flash (無料)
     try:
         script = _generate_with_gemini(user_prompt, GEMINI_MODEL_PRIMARY)
-        logger.info(f"[Script] Gemini 2.0 Flash で生成成功: {script['title']}")
+        logger.info(f"[Script] {GEMINI_MODEL_PRIMARY} で生成成功: {script['title']}")
         script["generated_by"] = f"gemini/{GEMINI_MODEL_PRIMARY}"
         return script
+    except _NoQuotaError as e:
+        logger.warning(f"[Script] {GEMINI_MODEL_PRIMARY} クォータなし → {GEMINI_MODEL_FALLBACK} に切り替えます")
     except Exception as e:
-        logger.warning(f"[Script] Gemini 2.0 Flash 失敗: {e} → Gemini 1.5 Flash に切り替えます")
+        logger.warning(f"[Script] {GEMINI_MODEL_PRIMARY} 失敗: {e} → {GEMINI_MODEL_FALLBACK} に切り替えます")
 
-    # Fallback1: Gemini 1.5 Flash (無料・異なるバージョン)
+    # Fallback1: Gemini 2.5 Pro (無料・異なるバージョン)
     try:
         script = _generate_with_gemini(user_prompt, GEMINI_MODEL_FALLBACK)
-        logger.info(f"[Script] Gemini 1.5 Flash で生成成功: {script['title']}")
+        logger.info(f"[Script] {GEMINI_MODEL_FALLBACK} で生成成功: {script['title']}")
         script["generated_by"] = f"gemini/{GEMINI_MODEL_FALLBACK}"
         return script
+    except _NoQuotaError as e:
+        logger.warning(f"[Script] {GEMINI_MODEL_FALLBACK} クォータなし → Claude Haiku に切り替えます")
     except Exception as e:
-        logger.warning(f"[Script] Gemini 1.5 Flash も失敗: {e} → Claude Haiku に切り替えます")
+        logger.warning(f"[Script] {GEMINI_MODEL_FALLBACK} も失敗: {e} → Claude Haiku に切り替えます")
 
     # Fallback2: Claude Haiku (有償 — API キーがある場合のみ)
     if ANTHROPIC_API_KEY:
