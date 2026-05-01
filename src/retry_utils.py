@@ -11,6 +11,11 @@ from src.config import (
 logger = logging.getLogger(__name__)
 
 
+class NoRetryError(Exception):
+    """リトライしても解決しないエラー (クォータ0など) — 即座に上位へ伝播"""
+    pass
+
+
 def retry_with_backoff(
     max_attempts: int = RETRY_MAX_ATTEMPTS,
     initial_delay: float = RETRY_INITIAL_DELAY_SEC,
@@ -18,7 +23,7 @@ def retry_with_backoff(
     backoff_factor: float = RETRY_BACKOFF_FACTOR,
     exceptions: tuple = (Exception,),
 ):
-    """指数バックオフ付きリトライデコレータ。負荷を与えすぎないよう待機時間を設ける。"""
+    """指数バックオフ付きリトライデコレータ。NoRetryError はリトライせず即 raise。"""
     def decorator(func):
         @functools.wraps(func)
         def wrapper(*args, **kwargs):
@@ -30,6 +35,8 @@ def retry_with_backoff(
                     if attempt > 1:
                         logger.info(f"[{func.__name__}] 試行 {attempt} で成功しました")
                     return result
+                except NoRetryError:
+                    raise  # リトライせず即座に上位へ
                 except exceptions as e:
                     last_exception = e
                     if attempt == max_attempts:
