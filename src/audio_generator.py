@@ -1,7 +1,8 @@
 """
 音声生成モジュール: Gemini TTS マルチスピーカー (1回のAPI呼び出しで全台本を合成)
-  Primary  : gemini-2.5-flash-preview-tts
-  Fallback : per-segment + レート制限遵守 (3 req/min → 22秒間隔)
+  Primary   : gemini-2.5-flash-preview-tts  (マルチスピーカー)
+  Fallback1 : gemini-2.5-pro-preview-tts    (マルチスピーカー)
+  Fallback2 : per-segment + レート制限遵守 (3 req/min → 22秒間隔)
 """
 import base64
 import logging
@@ -28,6 +29,12 @@ VOICE_MAP = {
     "primary": {"host_male": TTS_VOICE_MALE_PRIMARY, "host_female": TTS_VOICE_FEMALE_PRIMARY},
     "fallback": {"host_male": TTS_VOICE_MALE_FALLBACK, "host_female": TTS_VOICE_FEMALE_FALLBACK},
 }
+
+
+def _is_quota_exhausted(e: Exception) -> bool:
+    """リトライしても解決しないクォータ超過か判定 (limit:0 または日次上限)"""
+    s = str(e)
+    return "limit: 0" in s or "GenerateRequestsPerDay" in s
 
 
 def _pcm_to_mp3(pcm_data: bytes, output_path: Path, mime_type: str = "") -> Path:
@@ -96,8 +103,8 @@ def _synthesize_multispeaker(dialogue: list[dict], model: str) -> tuple[bytes, s
             ),
         )
     except Exception as e:
-        if "limit: 0" in str(e):
-            raise NoRetryError(f"{model} は無料枠クォータなし") from e
+        if _is_quota_exhausted(e):
+            raise NoRetryError(f"{model} クォータ上限") from e
         raise
 
     part = response.candidates[0].content.parts[0]
@@ -128,8 +135,8 @@ def _synthesize_single(text: str, voice_name: str, model: str) -> tuple[bytes, s
             ),
         )
     except Exception as e:
-        if "limit: 0" in str(e):
-            raise NoRetryError(f"{model} は無料枠クォータなし") from e
+        if _is_quota_exhausted(e):
+            raise NoRetryError(f"{model} クォータ上限") from e
         raise
 
     part = response.candidates[0].content.parts[0]
@@ -142,8 +149,10 @@ def _synthesize_single(text: str, voice_name: str, model: str) -> tuple[bytes, s
 def generate_podcast_audio(dialogue: list[dict], output_path: Path) -> Path:
     """
     台本全体を音声合成して MP3 を生成。
-    Primary  : マルチスピーカーTTS (1回のAPI呼び出し)
-    Fallback : セグメント別TTS (22秒間隔でレート制限を遵守)
+    Primary   : マルチスピーカーTTS / Flash (1回のAPI呼び出し)
+    Fallback1 : マルチスピーカーTTS / Pro
+    Fallback2 : セグメント別TTS / Flash (22秒間隔でレート制限を遵守)
+    Fallback3 : セグメント別TTS / Pro
     """
     logger.info("=== 音声生成開始 ===")
 
@@ -154,12 +163,24 @@ def generate_podcast_audio(dialogue: list[dict], output_path: Path) -> Path:
         duration = len(__import__('pydub').AudioSegment.from_mp3(str(output_path))) / 1000
         logger.info(f"[TTS] マルチスピーカー生成完了: {output_path.name} ({duration:.1f}秒)")
         return output_path
-    except NoRetryError as e:
-        logger.warning(f"[TTS] {TTS_MODEL_PRIMARY} クォータなし → セグメント方式に切り替えます")
+    except NoRetryError:
+        logger.warning(f"[TTS] {TTS_MODEL_PRIMARY} クォータ上限 → {TTS_MODEL_FALLBACK} を試みます")
     except Exception as e:
-        logger.warning(f"[TTS] マルチスピーカー失敗: {e} → セグメント方式に切り替えます")
+        logger.warning(f"[TTS] {TTS_MODEL_PRIMARY} 失敗: {e} → {TTS_MODEL_FALLBACK} を試みます")
 
-    # Fallback: セグメント別TTS (レート制限 3 req/min を遵守)
+    # Fallback1: マルチスピーカー (Pro TTS)
+    try:
+        pcm, mime = _synthesize_multispeaker(dialogue, TTS_MODEL_FALLBACK)
+        _pcm_to_mp3(pcm, output_path, mime)
+        duration = len(__import__('pydub').AudioSegment.from_mp3(str(output_path))) / 1000
+        logger.info(f"[TTS] {TTS_MODEL_FALLBACK} マルチスピーカー生成完了: {output_path.name} ({duration:.1f}秒)")
+        return output_path
+    except NoRetryError:
+        logger.warning(f"[TTS] {TTS_MODEL_FALLBACK} もクォータ上限 → セグメント方式に切り替えます")
+    except Exception as e:
+        logger.warning(f"[TTS] {TTS_MODEL_FALLBACK} 失敗: {e} → セグメント方式に切り替えます")
+
+    # Fallback2/3: セグメント別TTS (レート制限 3 req/min を遵守)
     logger.info(f"[TTS] セグメント方式で生成 ({len(dialogue)} セグメント、{TTS_FREE_TIER_INTERVAL_SEC}秒間隔)")
     segments_dir = output_path.parent / "audio_segments"
     segments_dir.mkdir(parents=True, exist_ok=True)
@@ -175,17 +196,30 @@ def generate_podcast_audio(dialogue: list[dict], output_path: Path) -> Path:
             time.sleep(wait)
 
         speaker = line["speaker"]
-        voice = VOICE_MAP["primary"][speaker]
         seg_path = segments_dir / f"segment_{i:03d}_{speaker}.mp3"
-        logger.info(f"[TTS] セグメント {i+1}/{len(dialogue)}: {speaker} / {voice}")
 
-        try:
-            pcm, mime = _synthesize_single(line["text"], voice, TTS_MODEL_PRIMARY)
-        except NoRetryError:
-            logger.warning(f"[TTS] Flash TTS クォータなし → Fallback ボイスで試行")
-            pcm, mime = _synthesize_single(line["text"], VOICE_MAP["fallback"][speaker], TTS_MODEL_PRIMARY)
+        # Flash → Pro の順で試行、ボイスも primary → fallback の順
+        synthesized = False
+        for model in (TTS_MODEL_PRIMARY, TTS_MODEL_FALLBACK):
+            for voice_key in ("primary", "fallback"):
+                voice = VOICE_MAP[voice_key][speaker]
+                try:
+                    logger.info(f"[TTS] セグメント {i+1}/{len(dialogue)}: {speaker} / {voice} ({model})")
+                    pcm, mime = _synthesize_single(line["text"], voice, model)
+                    _pcm_to_mp3(pcm, seg_path, mime)
+                    synthesized = True
+                    break
+                except NoRetryError:
+                    logger.warning(f"[TTS] {model}/{voice} クォータ上限 → 次の候補を試みます")
+                except Exception as e:
+                    logger.warning(f"[TTS] {model}/{voice} 失敗: {e}")
+                    break  # 同モデルのボイス切り替えは意味がないので次モデルへ
+            if synthesized:
+                break
 
-        _pcm_to_mp3(pcm, seg_path, mime)
+        if not synthesized:
+            raise RuntimeError(f"セグメント {i+1} の合成に失敗しました (すべての TTS モデル/ボイスが利用不可)")
+
         segment_paths.append(seg_path)
         last_call_time = time.time()
 
